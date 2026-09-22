@@ -310,6 +310,53 @@ cv::Rect largest_valid_rectangle(const cv::Mat& mask)
     return best;
 }
 
+std::vector<cv::Point2f> marker_inner_boundary(const Detection& detection)
+{
+    if (detection.size() != 4) {
+        return {};
+    }
+
+    cv::Point2f marker_center_mean;
+    std::vector<cv::Point2f> marker_centers;
+    for (const auto& [id, corners] : detection) {
+        (void)id;
+        cv::Point2f center;
+        for (const cv::Point2f& corner : corners) {
+            center += corner * 0.25F;
+        }
+        marker_centers.push_back(center);
+        marker_center_mean += center * 0.25F;
+    }
+
+    // Pick the corner of each tag closest to the middle of all four tags.
+    // These four corners bound the usable area inside the marker arrangement.
+    std::vector<cv::Point2f> boundary;
+    for (const auto& [id, corners] : detection) {
+        (void)id;
+        const auto inner = std::min_element(
+            corners.begin(), corners.end(),
+            [&marker_center_mean](const cv::Point2f& left, const cv::Point2f& right) {
+                return cv::norm(left - marker_center_mean) <
+                       cv::norm(right - marker_center_mean);
+            });
+        boundary.push_back(*inner);
+    }
+
+    cv::Point2f boundary_center;
+    for (const cv::Point2f& point : boundary) {
+        boundary_center += point * 0.25F;
+    }
+    std::sort(boundary.begin(), boundary.end(),
+              [&boundary_center](const cv::Point2f& left, const cv::Point2f& right) {
+                  return std::atan2(left.y - boundary_center.y, left.x - boundary_center.x) <
+                         std::atan2(right.y - boundary_center.y, right.x - boundary_center.x);
+              });
+    if (!cv::isContourConvex(boundary) || std::abs(cv::contourArea(boundary)) < 256.0) {
+        return {};
+    }
+    return boundary;
+}
+
 bool open_writer(cv::VideoWriter& writer, const std::string& path, double fps,
                  const cv::Size& size, int preferred_fourcc)
 {
@@ -361,16 +408,20 @@ int main(int argc, char* argv[])
 {
     if (argc < 3) {
         std::cerr << "Usage: video_marker_offline <input.mp4> <output.mp4> "
-                     "[--step <frames>] [--debug-markers <debug.mp4>]\n";
+                     "[--step <frames>] [--debug-markers <debug.mp4>] "
+                     "[--crop-inside-markers]\n";
         return 1;
     }
 
     int step = 1;
     std::string debug_path;
+    bool crop_inside_markers = false;
     for (int argument = 3; argument < argc; ++argument) {
         const std::string option = argv[argument];
         if (option == "--debug-markers" && argument + 1 < argc) {
             debug_path = argv[++argument];
+        } else if (option == "--crop-inside-markers") {
+            crop_inside_markers = true;
         } else if (option == "--step" && argument + 1 < argc) {
             try {
                 step = std::stoi(argv[++argument]);
@@ -488,6 +539,22 @@ int main(int argc, char* argv[])
                             cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
         cv::bitwise_and(common_valid, warped_mask, common_valid);
     }
+    if (crop_inside_markers) {
+        const std::vector<cv::Point2f> inner_boundary = marker_inner_boundary(reference);
+        if (inner_boundary.empty()) {
+            std::cerr << "--crop-inside-markers requires all four IDs 0-3 in the "
+                         "reference frame\n";
+            return 1;
+        }
+        cv::Mat inside_markers(frame_size, CV_8U, cv::Scalar(0));
+        std::vector<cv::Point> polygon;
+        polygon.reserve(inner_boundary.size());
+        for (const cv::Point2f& point : inner_boundary) {
+            polygon.emplace_back(cvRound(point.x), cvRound(point.y));
+        }
+        cv::fillConvexPoly(inside_markers, polygon, cv::Scalar(255), cv::LINE_8);
+        cv::bitwise_and(common_valid, inside_markers, common_valid);
+    }
     const cv::Rect crop = largest_valid_rectangle(common_valid);
     if (crop.width < 16 || crop.height < 16) {
         std::cerr << "No common valid output area remains\n";
@@ -541,6 +608,9 @@ int main(int argc, char* argv[])
               << " output=" << crop.width << 'x' << crop.height
               << " crop_left=" << crop.x
               << " crop_top=" << crop.y;
+    if (crop_inside_markers) {
+        std::cout << " crop=inside-markers";
+    }
     if (!debug_path.empty()) {
         std::cout << " debug=" << debug_path;
     }

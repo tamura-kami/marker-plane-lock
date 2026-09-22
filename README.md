@@ -55,6 +55,15 @@ Optical Flowで四隅を追跡します。既定値は `1` です。
 ./build/video_marker_offline input.mp4 output.mp4 --step 4
 ```
 
+4枚のマーカーの内側だけを出力したい場合は、`--crop-inside-markers` を指定します。
+基準フレームで各マーカーの中央寄りの角を結んだ範囲から、有効な最大の長方形を切り出すため、
+マーカー自体は出力に含まれません。このオプションには、同一フレームで4枚すべてのマーカーが
+検出されていることが必要です。
+
+```bash
+./build/video_marker_offline input.mp4 output.mp4 --crop-inside-markers
+```
+
 マーカー検出を確認するデバッグ動画も同時に出力できます。直接検出は緑、Optical Flowで
 補完したマーカーは橙で表示します。
 
