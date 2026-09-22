@@ -107,4 +107,4 @@ def make_pdf(path: Path):
 
 
 if __name__ == "__main__":
-    make_pdf(Path("output/pdf/aruco_dict4x4_50_ids_0-3_a4.pdf"))
+    make_pdf(Path("docs/aruco_dict4x4_50_ids_0-3_a4.pdf"))
