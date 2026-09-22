@@ -1,10 +1,12 @@
 # marker-plane-lock
 
-ArUcoマーカーを使い、ノートや作業面を画面内で固定するオフライン動画補正ツールです。
+ArUcoマーカーを使い、ノートや作業面のカメラブレを軽減する動画補正ツールです。
 
 ## Demo
 
-[▶ 比較動画を再生](docs/comparison.mp4)
+![補正前後の比較プレビュー](docs/comparison.gif)
+
+[▶ 高画質の比較動画を再生](docs/comparison.mp4)
 
 ## Prerequisites
 
