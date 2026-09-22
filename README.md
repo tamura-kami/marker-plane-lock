@@ -46,6 +46,14 @@ Flowで最大8フレーム追跡します。前後追跡誤差や四角形の形
 ./build/video_marker_offline input.mp4 output.mp4
 ```
 
+マーカー検出を確認するデバッグ動画も同時に出力できます。直接検出は緑、Optical Flowで
+補完したマーカーは橙で表示します。
+
+```bash
+./build/video_marker_offline input.mp4 output.mp4 \
+    --debug-markers marker_debug.mp4
+```
+
 元動画と補正動画を左右に並べた比較動画は、次のスクリプトで作成できます。解像度差は
 拡大せず、中央寄せの黒い余白で自動的に揃えます。音声は元動画からコピーします。
 

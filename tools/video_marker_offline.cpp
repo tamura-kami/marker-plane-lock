@@ -320,13 +320,57 @@ bool open_writer(cv::VideoWriter& writer, const std::string& path, double fps,
     return writer.isOpened();
 }
 
+void draw_debug_overlay(cv::Mat& frame, const Detection& detection,
+                        const Detection& direct_detection, size_t frame_number)
+{
+    int flow_count = 0;
+    for (const auto& [id, corners] : detection) {
+        const bool direct = direct_detection.count(id) != 0;
+        const cv::Scalar color = direct ? cv::Scalar(60, 220, 60)
+                                        : cv::Scalar(0, 165, 255);
+        if (!direct) {
+            ++flow_count;
+        }
+        const std::vector<cv::Point> contour = {
+            corners[0], corners[1], corners[2], corners[3]
+        };
+        cv::polylines(frame, contour, true, color, 3, cv::LINE_AA);
+        const std::string label = "ID " + std::to_string(id) +
+                                  (direct ? " direct" : " flow");
+        const cv::Point origin(static_cast<int>(corners[0].x),
+                               std::max(22, static_cast<int>(corners[0].y) - 8));
+        cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.65,
+                    cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
+        cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.65,
+                    color, 2, cv::LINE_AA);
+    }
+
+    const std::string status = "frame=" + std::to_string(frame_number) +
+        " direct=" + std::to_string(direct_detection.size()) +
+        " flow=" + std::to_string(flow_count);
+    cv::rectangle(frame, cv::Rect(8, 8, 430, 38), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::putText(frame, status, cv::Point(16, 36), cv::FONT_HERSHEY_SIMPLEX,
+                0.8, detection.empty() ? cv::Scalar(40, 40, 255)
+                                       : cv::Scalar(255, 255, 255),
+                2, cv::LINE_AA);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[])
 {
-    if (argc != 3) {
-        std::cerr << "Usage: video_marker_offline <input.mp4> <output.mp4>\n";
+    if (argc != 3 && argc != 5) {
+        std::cerr << "Usage: video_marker_offline <input.mp4> <output.mp4> "
+                     "[--debug-markers <debug.mp4>]\n";
         return 1;
+    }
+    std::string debug_path;
+    if (argc == 5) {
+        if (std::string(argv[3]) != "--debug-markers") {
+            std::cerr << "Unknown option: " << argv[3] << '\n';
+            return 1;
+        }
+        debug_path = argv[4];
     }
 
     cv::VideoCapture input(argv[1]);
@@ -346,6 +390,7 @@ int main(int argc, char* argv[])
     parameters->cornerRefinementWinSize = 5;
 
     std::vector<Detection> detections;
+    std::vector<Detection> direct_detections;
     std::vector<int> direct_counts;
     std::vector<int> tracked_counts;
     std::array<int, 4> tracking_age{};
@@ -355,6 +400,7 @@ int main(int argc, char* argv[])
     while (input.read(frame)) {
         Detection detection = detect_markers(frame, dictionary, parameters);
         const int direct_count = static_cast<int>(detection.size());
+        direct_detections.push_back(detection);
         cv::Mat current_gray;
         cv::cvtColor(frame, current_gray, cv::COLOR_BGR2GRAY);
         const int tracked_count = bridge_missing_markers(
@@ -432,10 +478,22 @@ int main(int argc, char* argv[])
         std::cerr << "Could not create output video: " << argv[2] << '\n';
         return 1;
     }
+    cv::VideoWriter debug_output;
+    if (!debug_path.empty() &&
+        !open_writer(debug_output, debug_path, fps, frame_size, fourcc)) {
+        std::cerr << "Could not create marker debug video: " << debug_path << '\n';
+        return 1;
+    }
 
     cv::Mat stabilized;
     size_t frame_index = 0;
     while (frame_index < homographies.size() && input.read(frame)) {
+        if (debug_output.isOpened()) {
+            cv::Mat debug_frame = frame.clone();
+            draw_debug_overlay(debug_frame, detections[frame_index],
+                               direct_detections[frame_index], frame_index);
+            debug_output.write(debug_frame);
+        }
         cv::warpPerspective(frame, stabilized, homographies[frame_index], frame_size,
                             cv::INTER_LANCZOS4, cv::BORDER_CONSTANT);
         output.write(stabilized(crop));
@@ -457,6 +515,10 @@ int main(int argc, char* argv[])
               << " input=" << width << 'x' << height
               << " output=" << crop.width << 'x' << crop.height
               << " crop_left=" << crop.x
-              << " crop_top=" << crop.y << '\n';
+              << " crop_top=" << crop.y;
+    if (!debug_path.empty()) {
+        std::cout << " debug=" << debug_path;
+    }
+    std::cout << '\n';
     return 0;
 }
