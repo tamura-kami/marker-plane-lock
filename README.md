@@ -2,6 +2,10 @@
 
 ArUcoマーカーを使い、ノートや作業面を画面内で固定するオフライン動画補正ツールです。
 
+## Demo
+
+[▶ 比較動画を再生](docs/comparison.mp4)
+
 ## Prerequisites
 
 - CMake 3.16 以降
@@ -27,6 +31,8 @@ cmake --build build
 0.4px未満の推定変動は固定して、静止時に補正処理自身が揺れを作らないようにします。
 モーションブラーなどでArUco検出が短時間だけ途切れた場合は、直前に検出した四隅をOptical
 Flowで最大8フレーム追跡します。前後追跡誤差や四角形の形状が不正な追跡結果は採用しません。
+
+## Usage
 
 ```bash
 ./build/video_marker_offline input.mp4 output.mp4
