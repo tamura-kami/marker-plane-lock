@@ -96,7 +96,7 @@ bool track_marker(const cv::Mat& previous_gray, const cv::Mat& current_gray,
 
 int bridge_missing_markers(const cv::Mat& previous_gray, const cv::Mat& current_gray,
                            const Detection& previous, std::array<int, 4>& tracking_age,
-                           Detection& current)
+                           int maximum_age_frames, Detection& current)
 {
     int tracked = 0;
     if (previous_gray.empty()) {
@@ -108,7 +108,7 @@ int bridge_missing_markers(const cv::Mat& previous_gray, const cv::Mat& current_
             continue;
         }
         const auto prior = previous.find(id);
-        if (prior == previous.end() || tracking_age[id] >= kMaximumOpticalFlowAgeFrames) {
+        if (prior == previous.end() || tracking_age[id] >= maximum_age_frames) {
             continue;
         }
         MarkerCorners tracked_corners;
@@ -359,18 +359,32 @@ void draw_debug_overlay(cv::Mat& frame, const Detection& detection,
 
 int main(int argc, char* argv[])
 {
-    if (argc != 3 && argc != 5) {
+    if (argc < 3) {
         std::cerr << "Usage: video_marker_offline <input.mp4> <output.mp4> "
-                     "[--debug-markers <debug.mp4>]\n";
+                     "[--step <frames>] [--debug-markers <debug.mp4>]\n";
         return 1;
     }
+
+    int step = 1;
     std::string debug_path;
-    if (argc == 5) {
-        if (std::string(argv[3]) != "--debug-markers") {
-            std::cerr << "Unknown option: " << argv[3] << '\n';
+    for (int argument = 3; argument < argc; ++argument) {
+        const std::string option = argv[argument];
+        if (option == "--debug-markers" && argument + 1 < argc) {
+            debug_path = argv[++argument];
+        } else if (option == "--step" && argument + 1 < argc) {
+            try {
+                step = std::stoi(argv[++argument]);
+            } catch (const std::exception&) {
+                step = 0;
+            }
+            if (step < 1) {
+                std::cerr << "--step must be a positive integer\n";
+                return 1;
+            }
+        } else {
+            std::cerr << "Unknown or incomplete option: " << option << '\n';
             return 1;
         }
-        debug_path = argv[4];
     }
 
     cv::VideoCapture input(argv[1]);
@@ -394,22 +408,31 @@ int main(int argc, char* argv[])
     std::vector<int> direct_counts;
     std::vector<int> tracked_counts;
     std::array<int, 4> tracking_age{};
+    const int maximum_flow_age_frames = std::max(kMaximumOpticalFlowAgeFrames, step - 1);
+    size_t aruco_detection_frames = 0;
     cv::Mat previous_gray;
     Detection previous_detection;
     cv::Mat frame;
+    size_t frame_number = 0;
     while (input.read(frame)) {
-        Detection detection = detect_markers(frame, dictionary, parameters);
+        Detection detection;
+        if (frame_number % static_cast<size_t>(step) == 0) {
+            detection = detect_markers(frame, dictionary, parameters);
+            ++aruco_detection_frames;
+        }
         const int direct_count = static_cast<int>(detection.size());
         direct_detections.push_back(detection);
         cv::Mat current_gray;
         cv::cvtColor(frame, current_gray, cv::COLOR_BGR2GRAY);
         const int tracked_count = bridge_missing_markers(
-            previous_gray, current_gray, previous_detection, tracking_age, detection);
+            previous_gray, current_gray, previous_detection, tracking_age,
+            maximum_flow_age_frames, detection);
         detections.push_back(detection);
         direct_counts.push_back(direct_count);
         tracked_counts.push_back(tracked_count);
         previous_gray = current_gray;
         previous_detection = std::move(detection);
+        ++frame_number;
     }
     if (detections.empty()) {
         std::cerr << "Input contains no frames\n";
@@ -505,6 +528,8 @@ int main(int argc, char* argv[])
               << " interpolated=" << detections.size() - direct_frames
               << " flow_frames=" << optical_flow_frames
               << " flow_markers=" << optical_flow_markers
+              << " aruco_frames=" << aruco_detection_frames
+              << " step=" << step
               << " reference_frame=" << reference_index
               << " reference_markers=" << reference.size()
               << " seen_0=" << marker_histogram[0]

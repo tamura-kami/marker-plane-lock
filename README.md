@@ -46,6 +46,13 @@ Flowで最大8フレーム追跡します。前後追跡誤差や四角形の形
 ./build/video_marker_offline input.mp4 output.mp4
 ```
 
+`--step N` を付けると、ArUcoの検出をNフレームごとに行います。中間フレームでは
+Optical Flowで四隅を追跡します。既定値は `1` です。
+
+```bash
+./build/video_marker_offline input.mp4 output.mp4 --step 4
+```
+
 マーカー検出を確認するデバッグ動画も同時に出力できます。直接検出は緑、Optical Flowで
 補完したマーカーは橙で表示します。
 
