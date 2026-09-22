@@ -48,6 +48,7 @@ target_link_libraries(video_marker_offline
         opencv_core
         opencv_imgproc
         opencv_videoio
+        opencv_video
         opencv_calib3d
         opencv_aruco
 )

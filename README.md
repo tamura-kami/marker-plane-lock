@@ -39,9 +39,25 @@ cmake --build build
 オフライン版は次の形式で実行します。複数マーカーの中心から安定したSimilarity変換を
 推定し、1枚しか見えない場合は四隅を利用します。検出不能区間は前後から補間し、画面全体で
 0.4px未満の推定変動は固定して、静止時に補正処理自身が揺れを作らないようにします。
+モーションブラーなどでArUco検出が短時間だけ途切れた場合は、直前に検出した四隅をOptical
+Flowで最大8フレーム追跡します。前後追跡誤差や四角形の形状が不正な追跡結果は採用しません。
 
 ```bash
 ./build/video_marker_offline input.mp4 output.mp4
+```
+
+元動画と補正動画を左右に並べた比較動画は、次のスクリプトで作成できます。解像度差は
+拡大せず、中央寄せの黒い余白で自動的に揃えます。音声は元動画からコピーします。
+
+```bash
+./tools/make_comparison.sh input.mp4 stabilized.mp4 comparison.mp4
+```
+
+左右のラベルも指定できます。
+
+```bash
+./tools/make_comparison.sh input.mp4 stabilized.mp4 comparison.mp4 \
+    "Input" "Stable marker lock"
 ```
 
 最初のフレームを固定カメラの基準位置として保持し、映像外周の特徴点を各フレームから追跡します。

@@ -1,6 +1,7 @@
 #include <opencv2/aruco.hpp>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/video/tracking.hpp>
 #include <opencv2/videoio.hpp>
 
 #include <algorithm>
@@ -16,6 +17,10 @@ namespace {
 
 using MarkerCorners = std::array<cv::Point2f, 4>;
 using Detection = std::map<int, MarkerCorners>;
+
+constexpr int kMaximumOpticalFlowAgeFrames = 8;
+constexpr double kMaximumForwardBackwardError = 1.5;
+constexpr double kMaximumTrackingError = 35.0;
 
 Detection detect_markers(const cv::Mat& frame,
                          const cv::Ptr<cv::aruco::Dictionary>& dictionary,
@@ -36,6 +41,84 @@ Detection detect_markers(const cv::Mat& frame,
         result[ids[i]] = marker;
     }
     return result;
+}
+
+bool plausible_marker(const MarkerCorners& previous, const MarkerCorners& current)
+{
+    const std::vector<cv::Point2f> previous_contour(previous.begin(), previous.end());
+    const std::vector<cv::Point2f> current_contour(current.begin(), current.end());
+    const double previous_area = std::abs(cv::contourArea(previous_contour));
+    const double current_area = std::abs(cv::contourArea(current_contour));
+    if (!cv::isContourConvex(current_contour) || previous_area < 100.0 ||
+        current_area < 100.0 || current_area / previous_area < 0.55 ||
+        current_area / previous_area > 1.8) {
+        return false;
+    }
+    for (int corner = 0; corner < 4; ++corner) {
+        const double edge = cv::norm(current[corner] - current[(corner + 1) % 4]);
+        if (edge < 10.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool track_marker(const cv::Mat& previous_gray, const cv::Mat& current_gray,
+                  const MarkerCorners& previous, MarkerCorners& current)
+{
+    const std::vector<cv::Point2f> previous_points(previous.begin(), previous.end());
+    std::vector<cv::Point2f> current_points;
+    std::vector<unsigned char> forward_status;
+    std::vector<float> forward_error;
+    cv::calcOpticalFlowPyrLK(previous_gray, current_gray, previous_points, current_points,
+                             forward_status, forward_error, cv::Size(31, 31), 4);
+
+    std::vector<cv::Point2f> backward_points;
+    std::vector<unsigned char> backward_status;
+    std::vector<float> backward_error;
+    cv::calcOpticalFlowPyrLK(current_gray, previous_gray, current_points, backward_points,
+                             backward_status, backward_error, cv::Size(31, 31), 4);
+
+    if (current_points.size() != 4 || backward_points.size() != 4) {
+        return false;
+    }
+    for (int corner = 0; corner < 4; ++corner) {
+        if (!forward_status[corner] || !backward_status[corner] ||
+            forward_error[corner] > kMaximumTrackingError ||
+            cv::norm(backward_points[corner] - previous_points[corner]) >
+                kMaximumForwardBackwardError) {
+            return false;
+        }
+        current[corner] = current_points[corner];
+    }
+    return plausible_marker(previous, current);
+}
+
+int bridge_missing_markers(const cv::Mat& previous_gray, const cv::Mat& current_gray,
+                           const Detection& previous, std::array<int, 4>& tracking_age,
+                           Detection& current)
+{
+    int tracked = 0;
+    if (previous_gray.empty()) {
+        return tracked;
+    }
+    for (int id = 0; id < 4; ++id) {
+        if (current.count(id)) {
+            tracking_age[id] = 0;
+            continue;
+        }
+        const auto prior = previous.find(id);
+        if (prior == previous.end() || tracking_age[id] >= kMaximumOpticalFlowAgeFrames) {
+            continue;
+        }
+        MarkerCorners tracked_corners;
+        if (track_marker(previous_gray, current_gray, prior->second, tracked_corners)) {
+            current[id] = tracked_corners;
+            ++tracking_age[id];
+            ++tracked;
+        }
+    }
+    return tracked;
 }
 
 double reference_score(const Detection& detection)
@@ -263,9 +346,24 @@ int main(int argc, char* argv[])
     parameters->cornerRefinementWinSize = 5;
 
     std::vector<Detection> detections;
+    std::vector<int> direct_counts;
+    std::vector<int> tracked_counts;
+    std::array<int, 4> tracking_age{};
+    cv::Mat previous_gray;
+    Detection previous_detection;
     cv::Mat frame;
     while (input.read(frame)) {
-        detections.push_back(detect_markers(frame, dictionary, parameters));
+        Detection detection = detect_markers(frame, dictionary, parameters);
+        const int direct_count = static_cast<int>(detection.size());
+        cv::Mat current_gray;
+        cv::cvtColor(frame, current_gray, cv::COLOR_BGR2GRAY);
+        const int tracked_count = bridge_missing_markers(
+            previous_gray, current_gray, previous_detection, tracking_age, detection);
+        detections.push_back(detection);
+        direct_counts.push_back(direct_count);
+        tracked_counts.push_back(tracked_count);
+        previous_gray = current_gray;
+        previous_detection = std::move(detection);
     }
     if (detections.empty()) {
         std::cerr << "Input contains no frames\n";
@@ -275,7 +373,9 @@ int main(int argc, char* argv[])
     size_t reference_index = 0;
     double best_score = -1.0;
     for (size_t i = 0; i < detections.size(); ++i) {
-        const double score = reference_score(detections[i]);
+        // A reference must come from decoded ArUco markers, never propagated flow.
+        const double score = static_cast<double>(direct_counts[i]) * 1.0e9 +
+                             reference_score(detections[i]);
         if (score > best_score) {
             best_score = score;
             reference_index = i;
@@ -289,9 +389,15 @@ int main(int argc, char* argv[])
 
     std::vector<cv::Mat> homographies(detections.size());
     size_t direct_frames = 0;
+    size_t optical_flow_frames = 0;
+    size_t optical_flow_markers = 0;
     std::array<size_t, 5> marker_histogram{};
     for (size_t i = 0; i < detections.size(); ++i) {
         marker_histogram[std::min<size_t>(4, detections[i].size())]++;
+        if (tracked_counts[i] > 0) {
+            ++optical_flow_frames;
+            optical_flow_markers += static_cast<size_t>(tracked_counts[i]);
+        }
         homographies[i] = estimate_to_reference(detections[i], reference);
         if (!homographies[i].empty()) {
             ++direct_frames;
@@ -339,6 +445,8 @@ int main(int argc, char* argv[])
     std::cout << "frames=" << detections.size()
               << " direct=" << direct_frames
               << " interpolated=" << detections.size() - direct_frames
+              << " flow_frames=" << optical_flow_frames
+              << " flow_markers=" << optical_flow_markers
               << " reference_frame=" << reference_index
               << " reference_markers=" << reference.size()
               << " seen_0=" << marker_histogram[0]
