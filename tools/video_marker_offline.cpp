@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -21,6 +23,20 @@ using Detection = std::map<int, MarkerCorners>;
 constexpr int kMaximumOpticalFlowAgeFrames = 8;
 constexpr double kMaximumForwardBackwardError = 1.5;
 constexpr double kMaximumTrackingError = 35.0;
+
+std::string shell_quote(const std::string& value)
+{
+    std::string quoted = "'";
+    for (const char character : value) {
+        if (character == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += character;
+        }
+    }
+    quoted += "'";
+    return quoted;
+}
 
 Detection detect_markers(const cv::Mat& frame,
                          const cv::Ptr<cv::aruco::Dictionary>& dictionary,
@@ -490,8 +506,9 @@ int main(int argc, char* argv[])
 
     input.release();
     input.open(argv[1]);
+    const std::string video_only_path = std::string(argv[2]) + ".video-only.mp4";
     cv::VideoWriter output;
-    if (!open_writer(output, argv[2], fps, crop.size(), fourcc)) {
+    if (!open_writer(output, video_only_path, fps, crop.size(), fourcc)) {
         std::cerr << "Could not create output video: " << argv[2] << '\n';
         return 1;
     }
@@ -516,6 +533,19 @@ int main(int argc, char* argv[])
         output.write(stabilized(crop));
         ++frame_index;
     }
+    output.release();
+    debug_output.release();
+
+    const std::string mux_command = "ffmpeg -y -v error -i " +
+        shell_quote(video_only_path) + " -i " + shell_quote(argv[1]) +
+        " -map 0:v:0 -map 1:a? -map_metadata 1 -c:v copy -c:a aac -shortest "
+        "-movflags +faststart " + shell_quote(argv[2]);
+    if (std::system(mux_command.c_str()) != 0) {
+        std::cerr << "Could not mux the original audio into output; intermediate video is at "
+                  << video_only_path << "\n";
+        return 1;
+    }
+    std::filesystem::remove(video_only_path);
 
     std::cout << "frames=" << detections.size()
               << " direct=" << direct_frames

@@ -61,6 +61,7 @@ Optical Flowでマーカーを追跡します。既定値は `1` です。
 
 補正によって画面外になった部分の黒い領域を避け、全フレームで映像が残る最大の長方形に
 切り抜く場合は `--crop-valid` を指定します。切り抜き後の解像度は動画に応じて変わります。
+出力には入力動画の音声も引き継ぎます。そのため FFmpeg が必要です。
 
 ```bash
 ./build/video_marker_offline input.mp4 output.mp4 --crop-valid
