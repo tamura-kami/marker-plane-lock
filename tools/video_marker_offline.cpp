@@ -149,21 +149,14 @@ cv::Mat estimate_to_reference(const Detection& current, const Detection& referen
             continue;
         }
         ++shared_markers;
-        if (current.size() >= 2) {
-            cv::Point2f current_center;
-            cv::Point2f reference_center;
-            for (int corner = 0; corner < 4; ++corner) {
-                current_center += current_corners[corner] * 0.25F;
-                reference_center += found->second[corner] * 0.25F;
-            }
-            source.push_back(current_center);
-            destination.push_back(reference_center);
-        } else {
-            for (int corner = 0; corner < 4; ++corner) {
-                source.push_back(current_corners[corner]);
-                destination.push_back(found->second[corner]);
-            }
+        cv::Point2f current_center;
+        cv::Point2f reference_center;
+        for (int corner = 0; corner < 4; ++corner) {
+            current_center += current_corners[corner] * 0.25F;
+            reference_center += found->second[corner] * 0.25F;
         }
+        source.push_back(current_center);
+        destination.push_back(reference_center);
     }
 
     if (shared_markers >= 2) {
@@ -178,16 +171,12 @@ cv::Mat estimate_to_reference(const Detection& current, const Detection& referen
             return homography;
         }
     } else if (shared_markers == 1) {
-        // One visible tag still supplies rotation, scale and translation. Restricting
-        // this fallback to a similarity transform avoids unstable projective warps.
-        cv::Mat inliers;
-        const cv::Mat affine = cv::estimateAffinePartial2D(source, destination, inliers,
-                                                           cv::LMEDS);
-        if (!affine.empty()) {
-            cv::Mat homography = identity_homography();
-            affine.copyTo(homography(cv::Rect(0, 0, 3, 2)));
-            return homography;
-        }
+        // With one marker, use only its center to estimate XY translation. A single
+        // tag's corner noise should not introduce scale or rotation into the image.
+        cv::Mat transform = identity_homography();
+        transform.at<double>(0, 2) = destination.front().x - source.front().x;
+        transform.at<double>(1, 2) = destination.front().y - source.front().y;
+        return transform;
     }
     return {};
 }
@@ -278,85 +267,6 @@ void interpolate_missing(std::vector<cv::Mat>& homographies)
     }
 }
 
-cv::Rect largest_valid_rectangle(const cv::Mat& mask)
-{
-    std::vector<int> heights(mask.cols, 0);
-    cv::Rect best;
-    for (int y = 0; y < mask.rows; ++y) {
-        const auto* row = mask.ptr<unsigned char>(y);
-        for (int x = 0; x < mask.cols; ++x) {
-            heights[x] = row[x] ? heights[x] + 1 : 0;
-        }
-        std::vector<int> stack;
-        for (int x = 0; x <= mask.cols; ++x) {
-            const int height = x == mask.cols ? 0 : heights[x];
-            while (!stack.empty() && heights[stack.back()] > height) {
-                const int top = stack.back();
-                stack.pop_back();
-                const int left = stack.empty() ? 0 : stack.back() + 1;
-                const cv::Rect candidate(left, y - heights[top] + 1,
-                                         x - left, heights[top]);
-                if (candidate.area() > best.area()) {
-                    best = candidate;
-                }
-            }
-            if (x < mask.cols) {
-                stack.push_back(x);
-            }
-        }
-    }
-    if (best.width % 2) --best.width;
-    if (best.height % 2) --best.height;
-    return best;
-}
-
-std::vector<cv::Point2f> marker_inner_boundary(const Detection& detection)
-{
-    if (detection.size() != 4) {
-        return {};
-    }
-
-    cv::Point2f marker_center_mean;
-    std::vector<cv::Point2f> marker_centers;
-    for (const auto& [id, corners] : detection) {
-        (void)id;
-        cv::Point2f center;
-        for (const cv::Point2f& corner : corners) {
-            center += corner * 0.25F;
-        }
-        marker_centers.push_back(center);
-        marker_center_mean += center * 0.25F;
-    }
-
-    // Pick the corner of each tag closest to the middle of all four tags.
-    // These four corners bound the usable area inside the marker arrangement.
-    std::vector<cv::Point2f> boundary;
-    for (const auto& [id, corners] : detection) {
-        (void)id;
-        const auto inner = std::min_element(
-            corners.begin(), corners.end(),
-            [&marker_center_mean](const cv::Point2f& left, const cv::Point2f& right) {
-                return cv::norm(left - marker_center_mean) <
-                       cv::norm(right - marker_center_mean);
-            });
-        boundary.push_back(*inner);
-    }
-
-    cv::Point2f boundary_center;
-    for (const cv::Point2f& point : boundary) {
-        boundary_center += point * 0.25F;
-    }
-    std::sort(boundary.begin(), boundary.end(),
-              [&boundary_center](const cv::Point2f& left, const cv::Point2f& right) {
-                  return std::atan2(left.y - boundary_center.y, left.x - boundary_center.x) <
-                         std::atan2(right.y - boundary_center.y, right.x - boundary_center.x);
-              });
-    if (!cv::isContourConvex(boundary) || std::abs(cv::contourArea(boundary)) < 256.0) {
-        return {};
-    }
-    return boundary;
-}
-
 bool open_writer(cv::VideoWriter& writer, const std::string& path, double fps,
                  const cv::Size& size, int preferred_fourcc)
 {
@@ -408,20 +318,16 @@ int main(int argc, char* argv[])
 {
     if (argc < 3) {
         std::cerr << "Usage: video_marker_offline <input.mp4> <output.mp4> "
-                     "[--step <frames>] [--debug-markers <debug.mp4>] "
-                     "[--crop-inside-markers]\n";
+                     "[--step <frames>] [--debug-markers <debug.mp4>]\n";
         return 1;
     }
 
     int step = 1;
     std::string debug_path;
-    bool crop_inside_markers = false;
     for (int argument = 3; argument < argc; ++argument) {
         const std::string option = argv[argument];
         if (option == "--debug-markers" && argument + 1 < argc) {
             debug_path = argv[++argument];
-        } else if (option == "--crop-inside-markers") {
-            crop_inside_markers = true;
         } else if (option == "--step" && argument + 1 < argc) {
             try {
                 step = std::stoi(argv[++argument]);
@@ -502,8 +408,8 @@ int main(int argc, char* argv[])
         }
     }
     const Detection& reference = detections[reference_index];
-    if (reference.size() < 2) {
-        std::cerr << "At least two IDs from DICT_4X4_50 IDs 0-3 must be visible in one frame\n";
+    if (reference.empty()) {
+        std::cerr << "At least one ID from DICT_4X4_50 IDs 0-3 must be visible in one frame\n";
         return 1;
     }
 
@@ -531,35 +437,7 @@ int main(int argc, char* argv[])
     }
     suppress_subpixel_jitter(homographies, frame_size);
 
-    cv::Mat common_valid(frame_size, CV_8U, cv::Scalar(255));
-    const cv::Mat source_valid(frame_size, CV_8U, cv::Scalar(255));
-    cv::Mat warped_mask;
-    for (const cv::Mat& homography : homographies) {
-        cv::warpPerspective(source_valid, warped_mask, homography, frame_size,
-                            cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
-        cv::bitwise_and(common_valid, warped_mask, common_valid);
-    }
-    if (crop_inside_markers) {
-        const std::vector<cv::Point2f> inner_boundary = marker_inner_boundary(reference);
-        if (inner_boundary.empty()) {
-            std::cerr << "--crop-inside-markers requires all four IDs 0-3 in the "
-                         "reference frame\n";
-            return 1;
-        }
-        cv::Mat inside_markers(frame_size, CV_8U, cv::Scalar(0));
-        std::vector<cv::Point> polygon;
-        polygon.reserve(inner_boundary.size());
-        for (const cv::Point2f& point : inner_boundary) {
-            polygon.emplace_back(cvRound(point.x), cvRound(point.y));
-        }
-        cv::fillConvexPoly(inside_markers, polygon, cv::Scalar(255), cv::LINE_8);
-        cv::bitwise_and(common_valid, inside_markers, common_valid);
-    }
-    const cv::Rect crop = largest_valid_rectangle(common_valid);
-    if (crop.width < 16 || crop.height < 16) {
-        std::cerr << "No common valid output area remains\n";
-        return 1;
-    }
+    const cv::Rect crop(0, 0, frame_size.width, frame_size.height);
 
     input.release();
     input.open(argv[1]);
@@ -608,9 +486,6 @@ int main(int argc, char* argv[])
               << " output=" << crop.width << 'x' << crop.height
               << " crop_left=" << crop.x
               << " crop_top=" << crop.y;
-    if (crop_inside_markers) {
-        std::cout << " crop=inside-markers";
-    }
     if (!debug_path.empty()) {
         std::cout << " debug=" << debug_path;
     }
