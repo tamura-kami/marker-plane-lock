@@ -39,13 +39,21 @@ std::string shell_quote(const std::string& value)
 }
 
 Detection detect_markers(const cv::Mat& frame,
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+                         const cv::aruco::ArucoDetector& detector)
+#else
                          const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                          const cv::Ptr<cv::aruco::DetectorParameters>& parameters)
+#endif
 {
     std::vector<int> ids;
     std::vector<std::vector<cv::Point2f>> corners;
     std::vector<std::vector<cv::Point2f>> rejected;
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+    detector.detectMarkers(frame, corners, ids, rejected);
+#else
     cv::aruco::detectMarkers(frame, dictionary, corners, ids, parameters, rejected);
+#endif
 
     Detection result;
     for (size_t i = 0; i < ids.size(); ++i) {
@@ -406,9 +414,12 @@ int main(int argc, char* argv[])
     const cv::Size frame_size(width, height);
 
     const auto dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
-    const auto parameters = cv::aruco::DetectorParameters::create();
+    const auto parameters = cv::makePtr<cv::aruco::DetectorParameters>();
     parameters->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
     parameters->cornerRefinementWinSize = 5;
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+    const cv::aruco::ArucoDetector detector(dictionary, *parameters);
+#endif
 
     std::vector<Detection> detections;
     std::vector<Detection> direct_detections;
@@ -424,7 +435,11 @@ int main(int argc, char* argv[])
     while (input.read(frame)) {
         Detection detection;
         if (frame_number % static_cast<size_t>(step) == 0) {
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+            detection = detect_markers(frame, detector);
+#else
             detection = detect_markers(frame, dictionary, parameters);
+#endif
             ++aruco_detection_frames;
         }
         const int direct_count = static_cast<int>(detection.size());
